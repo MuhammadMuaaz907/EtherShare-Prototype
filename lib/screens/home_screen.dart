@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/file_sharing_service.dart';
 import '../services/robust_rsa_service_v2.dart';
+import '../services/ipfs_service.dart';
 import 'sender_screen.dart';
 import 'receiver_screen.dart';
 
@@ -15,11 +16,45 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   RobustRsaKeyPair? _userKeyPair;
   bool _isGeneratingKeys = false;
+  bool _isIpfsRunning = false;
+  bool _isCheckingIpfs = false;
+  Map<String, dynamic>? _ipfsInfo;
 
   @override
   void initState() {
     super.initState();
     _generateUserKeys();
+    _checkIpfsStatus();
+  }
+
+  Future<void> _checkIpfsStatus() async {
+    setState(() {
+      _isCheckingIpfs = true;
+    });
+
+    try {
+      final isRunning = await IpfsService.isIpfsRunning();
+      final info = await IpfsService.getIpfsInfo();
+      
+      setState(() {
+        _isIpfsRunning = isRunning;
+        _ipfsInfo = info;
+        _isCheckingIpfs = false;
+      });
+      
+      if (isRunning) {
+        print('✅ IPFS Desktop is running');
+        print('🆔 Node ID: ${info?['ID'] ?? 'Unknown'}');
+      } else {
+        print('⚠️ IPFS Desktop is not running');
+      }
+    } catch (e) {
+      setState(() {
+        _isIpfsRunning = false;
+        _isCheckingIpfs = false;
+      });
+      print('❌ Failed to check IPFS status: $e');
+    }
   }
 
   Future<void> _generateUserKeys() async {
@@ -105,6 +140,64 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
+                      // IPFS Status Card
+                      Card(
+                        color: _isIpfsRunning ? Colors.green.shade50 : Colors.orange.shade50,
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(
+                                    _isIpfsRunning ? Icons.cloud_done : Icons.cloud_off,
+                                    color: _isIpfsRunning ? Colors.green : Colors.orange,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'IPFS Desktop Status',
+                                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  if (_isCheckingIpfs)
+                                    const SizedBox(
+                                      width: 20,
+                                      height: 20,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    )
+                                  else
+                                    IconButton(
+                                      onPressed: _checkIpfsStatus,
+                                      icon: const Icon(Icons.refresh),
+                                      tooltip: 'Refresh IPFS Status',
+                                    ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                _isIpfsRunning 
+                                  ? '✅ IPFS Desktop is running - Real IPFS mode enabled'
+                                  : '⚠️ IPFS Desktop is not running - Mock IPFS mode',
+                                style: TextStyle(
+                                  color: _isIpfsRunning ? Colors.green.shade700 : Colors.orange.shade700,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                              if (_ipfsInfo != null) ...[
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Node ID: ${_ipfsInfo!['ID']?.substring(0, 12) ?? 'Unknown'}...',
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
                       // Header
                       Card(
                         child: Padding(

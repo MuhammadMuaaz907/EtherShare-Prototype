@@ -1,21 +1,88 @@
 import 'dart:typed_data';
 import 'dart:io';
+import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:http/http.dart' as http;
 
 class IpfsService {
-  // For this prototype, we'll use a mock IPFS service
-  // In production, you would connect to an actual IPFS node
-  static const String _mockGateway = 'https://gateway.pinata.cloud/ipfs';
+  // Real IPFS Desktop integration
+  static const String _ipfsEndpoint = 'http://192.168.0.35:5001/api/v0';
+  static const String _ipfsGateway = 'http://127.0.0.1:8081/ipfs';
   
-  // Mock storage for demonstration (in-memory cache)
+  // Fallback mock storage for demonstration (in-memory cache)
   static final Map<String, Uint8List> _mockStorage = {};
+  
+  // Configuration flags
+  static bool _useRealIpfs = true; // Set to true for real IPFS, false for mock
 
   /// Upload file to IPFS and return Content Identifier (CID)
   static Future<String> uploadFile(Uint8List fileData, String fileName) async {
     try {
-      // In real implementation, this would upload to IPFS
-      // For demo, we'll simulate with a hash-based CID
+      if (_useRealIpfs) {
+        return await _uploadToRealIpfs(fileData, fileName);
+      } else {
+        return await _uploadToMockIpfs(fileData, fileName);
+      }
+    } catch (e) {
+      print('⚠️ Real IPFS failed, falling back to mock: $e');
+      // Fallback to mock IPFS if real IPFS fails
+      return await _uploadToMockIpfs(fileData, fileName);
+    }
+  }
+  
+  /// Upload to real IPFS Desktop
+  static Future<String> _uploadToRealIpfs(Uint8List fileData, String fileName) async {
+    try {
+      final request = http.MultipartRequest('POST', Uri.parse('$_ipfsEndpoint/add'));
+      
+      // Add CORS headers
+      request.headers.addAll({
+        'Content-Type': 'multipart/form-data',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
+      });
+      
+      request.files.add(http.MultipartFile.fromBytes(
+        'file',
+        fileData,
+        filename: fileName,
+      ));
+      
+      print('🔄 Uploading to IPFS: $_ipfsEndpoint/add');
+      print('📁 File: $fileName (${fileData.length} bytes)');
+      
+      final response = await request.send();
+      final responseBody = await response.stream.bytesToString();
+      
+      print('📡 IPFS Response Status: ${response.statusCode}');
+      print('📡 IPFS Response Body: $responseBody');
+      
+      if (response.statusCode == 200) {
+        final jsonResponse = jsonDecode(responseBody);
+        final cid = jsonResponse['Hash'];
+        
+        print('✅ File uploaded to real IPFS with CID: $cid');
+        print('📁 File URL: $_ipfsGateway/$cid');
+        
+        // Also store in mock storage as backup
+        _mockStorage[cid] = fileData;
+        await _saveToPersistentStorage(cid, fileData);
+        
+        return cid;
+      } else {
+        throw Exception('IPFS upload failed with status: ${response.statusCode} - $responseBody');
+      }
+    } catch (e) {
+      print('❌ Real IPFS upload error: $e');
+      throw Exception('Real IPFS upload failed: $e');
+    }
+  }
+  
+  /// Upload to mock IPFS (fallback)
+  static Future<String> _uploadToMockIpfs(Uint8List fileData, String fileName) async {
+    try {
       final hash = sha256.convert(fileData).toString();
       final cid = 'Qm${hash.substring(0, 44)}'; // Mock CID format
       
@@ -23,15 +90,67 @@ class IpfsService {
       _mockStorage[cid] = fileData;
       await _saveToPersistentStorage(cid, fileData);
       
-      print('File uploaded to IPFS with CID: $cid');
+      print('📁 File uploaded to mock IPFS with CID: $cid');
       return cid;
     } catch (e) {
-      throw Exception('Failed to upload file to IPFS: $e');
+      throw Exception('Mock IPFS upload failed: $e');
     }
   }
 
   /// Download file from IPFS using CID
   static Future<Uint8List> downloadFile(String cid) async {
+    try {
+      if (_useRealIpfs) {
+        return await _downloadFromRealIpfs(cid);
+      } else {
+        return await _downloadFromMockIpfs(cid);
+      }
+    } catch (e) {
+      print('⚠️ Real IPFS download failed, falling back to mock: $e');
+      // Fallback to mock IPFS if real IPFS fails
+      return await _downloadFromMockIpfs(cid);
+    }
+  }
+  
+  /// Download from real IPFS Desktop
+  static Future<Uint8List> _downloadFromRealIpfs(String cid) async {
+    try {
+      print('🔄 Downloading from IPFS: $_ipfsEndpoint/cat?arg=$cid');
+      
+      final response = await http.get(
+        Uri.parse('$_ipfsEndpoint/cat?arg=$cid'),
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type',
+        },
+      );
+      
+      print('📡 IPFS Download Response Status: ${response.statusCode}');
+      
+      if (response.statusCode == 200) {
+        final data = response.bodyBytes;
+        
+        print('✅ File downloaded from real IPFS with CID: $cid');
+        print('📁 File size: ${data.length} bytes');
+        
+        // Also store in mock storage as backup
+        _mockStorage[cid] = data;
+        await _saveToPersistentStorage(cid, data);
+        
+        return data;
+      } else {
+        print('❌ IPFS download failed: ${response.statusCode} - ${response.body}');
+        throw Exception('IPFS download failed with status: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('❌ Real IPFS download error: $e');
+      throw Exception('Real IPFS download failed: $e');
+    }
+  }
+  
+  /// Download from mock IPFS (fallback)
+  static Future<Uint8List> _downloadFromMockIpfs(String cid) async {
     try {
       // Check memory cache first
       if (_mockStorage.containsKey(cid)) {
@@ -51,7 +170,7 @@ class IpfsService {
       return await _createDemoFile(cid);
       
     } catch (e) {
-      throw Exception('Failed to download file from IPFS: $e');
+      throw Exception('Mock IPFS download failed: $e');
     }
   }
 
@@ -99,13 +218,85 @@ class IpfsService {
 
   /// Get file URL for direct access
   static String getFileUrl(String cid) {
-    return '$_mockGateway/$cid';
+    if (_useRealIpfs) {
+      return '$_ipfsGateway/$cid';
+    } else {
+      return 'https://gateway.pinata.cloud/ipfs/$cid';
+    }
   }
 
   /// Validate CID format
   static bool isValidCid(String cid) {
-    // Basic CID validation (starts with Qm for mock)
+    // CID validation for both real and mock IPFS
     return cid.startsWith('Qm') && cid.length > 10;
+  }
+  
+  /// Check if IPFS Desktop is running
+  static Future<bool> isIpfsRunning() async {
+    try {
+      print('🔄 Checking IPFS status: $_ipfsEndpoint/id');
+      
+      final response = await http.post(
+        Uri.parse('$_ipfsEndpoint/id'),
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type',
+        },
+      );
+      
+      print('📡 IPFS Status Response: ${response.statusCode}');
+      
+      if (response.statusCode == 200) {
+        print('✅ IPFS Desktop is running');
+        return true;
+      } else {
+        print('⚠️ IPFS Desktop responded with status: ${response.statusCode}');
+        return false;
+      }
+    } catch (e) {
+      print('❌ IPFS status check failed: $e');
+      return false;
+    }
+  }
+  
+  /// Get IPFS node information
+  static Future<Map<String, dynamic>?> getIpfsInfo() async {
+    try {
+      print('🔄 Getting IPFS info: $_ipfsEndpoint/id');
+      
+      final response = await http.post(
+        Uri.parse('$_ipfsEndpoint/id'),
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type',
+        },
+      );
+      
+      if (response.statusCode == 200) {
+        final info = jsonDecode(response.body);
+        print('✅ IPFS Info retrieved: ${info['ID']?.substring(0, 12)}...');
+        return info;
+      } else {
+        print('⚠️ IPFS info request failed: ${response.statusCode}');
+        return null;
+      }
+    } catch (e) {
+      print('❌ IPFS info request error: $e');
+      return null;
+    }
+  }
+  
+  /// Switch between real and mock IPFS
+  static void setUseRealIpfs(bool useReal) {
+    _useRealIpfs = useReal;
+    print('🔄 IPFS mode switched to: ${useReal ? "Real IPFS Desktop" : "Mock IPFS"}');
+  }
+  
+  /// Get current IPFS mode
+  static bool getUseRealIpfs() {
+    return _useRealIpfs;
   }
 
   /// Clean up mock storage (for testing)
